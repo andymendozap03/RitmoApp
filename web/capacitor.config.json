@@ -1,0 +1,13 @@
+{
+  "appId": "com.ritmo.auto",
+  "appName": "Ritmo",
+  "webDir": "dist",
+  "android": {
+    "path": "android"
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}

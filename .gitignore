@@ -1,0 +1,44 @@
+# Local IDE and build state
+.idea/
+.vs/
+.vscode/
+*.iml
+*.user
+*.suo
+.DS_Store
+.gradle/
+.gradle-cache/
+.gradle-user/
+.kotlin/
+.java-tmp/
+.dotnet/
+.npm-cache/
+node_modules/
+bin/
+obj/
+build/
+dist/
+publish/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Machine-specific configuration and signing keys
+local.properties
+keystore.properties
+keystore/
+*.jks
+*.keystore
+*.p12
+*.pfx
+.env
+.env.*
+!.env.example
+
+# Generated packages and diagnostics
+*.apk
+*.aab
+*.aar
+*.class
+*.log
+*.hprof
