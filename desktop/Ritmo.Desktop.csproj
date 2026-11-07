@@ -7,7 +7,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Ritmo</AssemblyName>
     <RootNamespace>Ritmo</RootNamespace>
-    <Version>1.2.0</Version>
+    <Version>1.3.1</Version>
     <ApplicationIcon>Assets/ritmo.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup><Resource Include="Assets/ritmo.ico" /></ItemGroup>

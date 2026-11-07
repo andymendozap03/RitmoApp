@@ -55,12 +55,24 @@ Las pruebas verifican cola sin duplicados, CSV, persistencia, letras, extracció
 
 ## Comportamiento de la interfaz
 
-Las listas conservan sus controles WPF y se crean por lotes para permitir interacción durante la carga. Las portadas se decodifican fuera del hilo de interfaz, con cuatro trabajos simultáneos como máximo y una caché de imágenes limitada a 48 MB. Las miniaturas se ajustan al tamaño de pantalla; la portada grande usa su propia resolución y el archivo original se conserva en disco.
+Las listas usan un `ListBox` con `VirtualizingStackPanel` y reciclaje: conservan todas las canciones como datos, pero solo crean controles cerca de la zona visible. El control administra su propio desplazamiento para mantener activa la [virtualización de WPF](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/advanced/optimizing-performance-controls). Se conservan los botones de cada fila y la posición al volver de letras o portada. La biblioteca y el reproductor se ocultan sin descartar sus medidas al alternar entre ellos.
 
-Los paneles de letras y cola se reutilizan durante la misma canción, sin reconstruirlos al alternar su visibilidad. La preparación del audio, las transferencias y el análisis del catálogo trabajan fuera del hilo de interfaz; el progreso de descarga se comunica como máximo unas diez veces por segundo y al completar. Se mantiene la consulta de letras al abrir su vista, sin precarga de proveedores.
+Solo se solicitan las portadas dentro de la zona visible. Hay dos trabajos de miniaturas y uno reservado para la portada actual; se cancelan solicitudes al ocultar o retirar una vista, sin cancelar imágenes compartidas por otra vista visible. Las filas, la cola y el reproductor inferior comparten tamaños de miniatura, y se evita descargar el mismo original simultáneamente.
+
+La decodificación JPEG/PNG y la conversión de píxeles se completan en segundo plano antes de entregar la imagen a WPF. Se presentan como máximo dos imágenes nuevas cada 16 ms para evitar una ráfaga de actualizaciones. La caché de imágenes decodificadas tiene un límite de 32 MB; la portada grande conserva su resolución independiente y el archivo original permanece en disco. Las imágenes ya mostradas se reutilizan al regresar a la página principal.
+
+Los controles del reproductor y de la cola se preparan en segundo plano del dispatcher al seleccionar una canción, antes del primer clic, y se reutilizan durante la misma canción. La letra se añade por lotes después de pintar el panel. La preparación del audio, las transferencias y el análisis del catálogo trabajan fuera del hilo de interfaz; el progreso de descarga se comunica como máximo unas diez veces por segundo y al completar. Se mantiene la consulta de letras al abrir su vista, sin precarga de proveedores.
+
+`--panel-test` mide la apertura y el regreso hasta un turno de dibujo con 320 canciones de prueba, verifica las filas recicladas, el desplazamiento, la prioridad de portada y la cancelación de cargas. Al añadir `--real-art-test`, copia 320 portadas existentes de la caché del usuario a una carpeta aislada, espera a que las imágenes visibles estén cargadas y genera capturas `real-art-*.png`. No modifica la biblioteca ni sus imágenes originales. Estas medidas no garantizan la latencia de presentación física del monitor.
+
+`%LOCALAPPDATA%\RitmoDesktop\performance.log` registra la versión, el nivel de renderizado, las transiciones y pausas del dispatcher superiores a 750 ms. Es local, se escribe fuera de la interfaz, rota al superar aproximadamente 64 KB y no incluye títulos de canciones ni contenido de la biblioteca.
 
 Se conserva la canción actual y hasta 20 próximas canciones en la cola. Al avanzar, la anterior desaparece de la vista y entra otra al final; el historial interno permite retroceder. También se conservan el logo de alta resolución, los botones de letras y cola en el reproductor inferior y la apertura de la portada sin reiniciar la canción actual.
 ## Límites conocidos
+
+El avance por clic observa también los eventos que WPF marca como atendidos, para que el temporizador no sustituya el destino antes de soltar el ratón. Al cambiar de canción se crea una nueva instancia de `MediaPlayer`, se ignoran los eventos de instancias anteriores y el cambio automático se realiza después del evento de finalización. Si el contador no arranca, se intenta reabrir el archivo local una sola vez conservando la intención de pausa; un fallo persistente permite reintentar sin saltarse la canción.
+
+`Ritmo.exe --transition-test` verifica finales naturales consecutivos, siguiente/anterior, pausa y pulsaciones rápidas. También copia al menos dos M4A existentes de la biblioteca local a una carpeta de prueba para verificar el cambio entre archivos comprimidos. No modifica los originales; esta comprobación requiere tener esas canciones guardadas. El registro local incluye eventos de reproducción por generación e índice, sin títulos ni URLs.
 
 - El rango mínimo de ventana es 760 × 540; las letras y la cola tienen desplazamiento propio y los controles permanecen visibles.
 - El catálogo no siempre proporciona insignias de autenticidad; se priorizan las coincidencias oficiales identificables, sin garantizar que cada resultado esté verificado.

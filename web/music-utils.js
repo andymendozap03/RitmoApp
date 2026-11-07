@@ -8,6 +8,15 @@ export function uniqueTracks(tracks) {
   return tracks.filter((track) => track?.id && !seen.has(track.id) && seen.add(track.id));
 }
 
+export function queueWindow(queue, index, limit = 20) {
+  if (index < 0 || index >= queue.length) return [];
+  return queue.slice(index, index + limit + 1).map((track, offset) => ({ track, index: index + offset }));
+}
+
+export function isCurrentRecording(current, selected, available) {
+  return Boolean(available && current?.id && current.id === selected?.id);
+}
+
 // Only future items move: history and the currently playing recording stay intact.
 export function orderUpcoming(queue, index, random = Math.random, original = null) {
   const upcoming = queue.slice(index + 1);

@@ -894,6 +894,7 @@ input[type="range"]::-moz-range-thumb {
 .playlist-folder-grid { margin-top: 14px; }
 .featured { min-height: clamp(240px, 27vw, 360px); border-radius: var(--card-radius); }
 .p-track, .p-center, .p-right { min-width: 0; }
+.p-right { display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
 .player { gap: clamp(12px, 1.5vw, 24px); padding-inline: clamp(14px, 2vw, 30px); }
 .p-seek { min-width: 0; }
 .player-screen { padding-inline: clamp(16px, 4vw, 64px); }

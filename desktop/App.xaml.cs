@@ -15,6 +15,7 @@ public partial class App : Application
         };
         if (e.Args.Contains("--self-test")) { SelfTest.Run(); Shutdown(); return; }
         if (e.Args.Contains("--network-test")) { await NetworkTest.Run(); Shutdown(); return; }
+        if (e.Args.Contains("--transition-test")) { await PlaybackTransitionTest.Run(); Shutdown(); return; }
         MainWindow = new MainWindow(); MainWindow.Show();
     }
 }

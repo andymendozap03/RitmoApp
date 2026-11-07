@@ -1,6 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { uniqueTracks, orderUpcoming, rankTracks, libraryCsv, parseLibraryCsv } from './music-utils.js';
+import { uniqueTracks, orderUpcoming, rankTracks, libraryCsv, parseLibraryCsv, queueWindow, isCurrentRecording } from './music-utils.js';
+
+test('queue window follows actual shuffled order, drops history and keeps original jump indices', () => {
+  const queue = orderUpcoming(Array.from({length: 60}, (_, i) => ({id: String(i)})), 5, () => .3);
+  const first = queueWindow(queue, 5);
+  const next = queueWindow(queue, 6);
+  assert.equal(first.length, 21);
+  assert.equal(first[0].index, 5);
+  assert.deepEqual(first.map(item => item.track), queue.slice(5, 26));
+  assert.deepEqual(next.slice(0, 20), first.slice(1));
+  assert.equal(next[20].index, 26);
+  assert.equal(queueWindow(queue, 59).length, 1);
+  assert.deepEqual(queueWindow(queue, -1), []);
+  assert.equal(queue.length, 60);
+});
+test('opening the current recording keeps playback but failed recordings can retry', () => {
+  assert.equal(isCurrentRecording({id:'a'}, {id:'a', title:'other playlist'}, true), true);
+  assert.equal(isCurrentRecording({id:'a'}, {id:'b'}, true), false);
+  assert.equal(isCurrentRecording({id:'a'}, {id:'a'}, false), false);
+  assert.equal(isCurrentRecording(null, null, true), false);
+});
 
 test('shuffle preserves current/history and visits every future track once', () => {
   const tracks = Array.from({ length: 30 }, (_, i) => ({ id: String(i) }));

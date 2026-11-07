@@ -12,8 +12,8 @@ public partial class MainWindow
     async Task Route(string target)
     {
         pageRequest?.Cancel(); pageRequest?.Dispose(); pageRequest = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token); var ct = pageRequest.Token;
-        view = target; expanded = false; overlay.Visibility = Visibility.Collapsed; continuation = browseId = null; paging = false;
-        listGeneration++; content.Children.Clear(); displayed = []; downloadButtons.Clear(); scroller.ScrollToTop();
+        view = target; ClosePlayer(); continuation = browseId = null; paging = false;
+        listGeneration++; content.Children.Clear(); displayed = []; downloadButtons.Clear(); scroller?.ScrollToTop();
         foreach (var pair in navigation) pair.Value.Background = Brush(pair.Key == view ? "#24312E" : "#0B1110");
         pageTitle.Text = target switch { "home" => "Inicio", "search" => "Buscar", "favorites" => "Me gusta", "playlists" => "Playlists", _ => "Descargas" };
         Notify("");
@@ -77,7 +77,7 @@ public partial class MainWindow
         foreach (var track in incoming)
         {
             if (generation != listGeneration || lifetime.IsCancellationRequested) return;
-            content.Children.Add(TrackRow(track, () => _ = playback.Play(displayed.ToList(), track)));
+            content.Children.Add(track);
             if (++count % 16 == 0) await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
         }
     }
@@ -107,7 +107,14 @@ public partial class MainWindow
         var button = labeled ? Button("Descargar", "download", () => _ = Download(track)) : IconButton("download", "Descargar", () => _ = Download(track));
         if (store.Downloaded(track)) { button.Content = labeled ? Label("✓ Disponible offline") : Icons.View("check", Icons.Accent); button.ToolTip = "Disponible sin conexión"; }
         if (!downloadButtons.TryGetValue(track.Id, out var buttons)) downloadButtons[track.Id] = buttons = [];
-        buttons.Add(button); return button;
+        buttons.RemoveAll(reference => !reference.TryGetTarget(out _));
+        buttons.Add(new(button)); return button;
+    }
+    IEnumerable<Button> DownloadTargets(string id)
+    {
+        if (!downloadButtons.TryGetValue(id, out var buttons)) yield break;
+        buttons.RemoveAll(reference => !reference.TryGetTarget(out _));
+        foreach (var reference in buttons) if (reference.TryGetTarget(out var button)) yield return button;
     }
     async Task Download(Track track)
     {
@@ -117,7 +124,7 @@ public partial class MainWindow
         try
         {
             await audio.Download(track, lifetime.Token);
-            if (downloadButtons.TryGetValue(track.Id, out var buttons)) foreach (var button in buttons) { button.Content = Icons.View("check", Icons.Accent); button.ToolTip = "Disponible sin conexión"; }
+            foreach (var button in DownloadTargets(track.Id)) { button.Content = Icons.View("check", Icons.Accent); button.ToolTip = "Disponible sin conexión"; }
             Notify("Guardada sin conexión: " + track.Title);
         }
         catch (OperationCanceledException) { }

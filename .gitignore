@@ -20,6 +20,8 @@ build/
 dist/
 publish/
 captures/
+test-results/
+playwright-report/
 .externalNativeBuild/
 .cxx/
 

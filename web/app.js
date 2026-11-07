@@ -1,8 +1,9 @@
 'use strict';
 
 import { Capacitor, registerPlugin } from '@capacitor/core';
-import { uniqueTracks, orderUpcoming, rankTracks, libraryCsv, normalizeText, parseLibraryCsv } from './music-utils.js';
+import { uniqueTracks, orderUpcoming, rankTracks, libraryCsv, normalizeText, parseLibraryCsv, queueWindow, isCurrentRecording } from './music-utils.js';
 import { cachedLyrics, storeLyrics } from './lyrics-cache.js';
+import { offlineTracks, offlineAudio, saveOfflineAudio } from './offline-audio.js';
 
 const isNativeApp = Capacitor.isNativePlatform();
 const NativePlayback = registerPlugin('RitmoPlayback');
@@ -50,12 +51,15 @@ const state = {
   favorites: readList('ritmo.favorites'), playlists: readList('ritmo.playlists'), activePlaylistId: null,
   shuffle: false, repeat: 0, request: 0, searchRequest: 0, searchResults: [], searchContinuation: null, searchLoading: false,
   queueOpen: false, lyricLines: [], lyricActive: -1, lyricsSynced: false, lyricsRequest: 0, lyricsTrackId: null, isPlaying: false,
-  nativePosition: 0, nativeDuration: 0, nativeSyncing: false,
-  downloadedIds: new Set(), downloadTasks: new Map()
+  nativePosition: 0, nativeDuration: 0, nativeSyncing: false, nativeAvailable: false,
+  downloadedIds: new Set(), downloadTasks: new Map(), downloads: [], recent: readList('ritmo.recent')
 };
 let originalQueue = [];
 let shuffleChanging = false;
 const pendingLyrics = new Map();
+let queueRenderKey = '';
+let offlineUrl = null;
+let playbackRequest = 0;
 
 function readList(key) {
   try { const value = JSON.parse(localStorage.getItem(key)); return Array.isArray(value) ? value : []; }
@@ -125,6 +129,7 @@ function applyDownloadsState(result = {}) {
   const previousTasks = state.downloadTasks;
   state.downloadedIds = new Set(Array.isArray(result.downloaded) ? result.downloaded : []);
   state.downloadTasks = new Map((Array.isArray(result.tasks) ? result.tasks : []).map((task) => [task.id, task]));
+  if (Array.isArray(result.tracks)) state.downloads = result.tracks;
   document.querySelectorAll('[data-download-track]').forEach((button) => updateDownloadButton(button, button.dataset.downloadTrack));
   for (const [id, task] of state.downloadTasks) {
     if (task.state !== 2 || previousTasks.get(id)?.state === 2) continue;
@@ -136,8 +141,14 @@ function applyDownloadsState(result = {}) {
   }
 }
 async function syncDownloads() {
-  if (!isNativeApp) return;
-  try { applyDownloadsState(await NativePlayback.getDownloads()); } catch { }
+  try {
+    if (isNativeApp) applyDownloadsState(await NativePlayback.getDownloads());
+    else {
+      state.downloads = await offlineTracks();
+      state.downloadedIds = new Set(state.downloads.map(track => track.id));
+      document.querySelectorAll('[data-download-track]').forEach(button => updateDownloadButton(button, button.dataset.downloadTrack));
+    }
+  } catch { /* Storage unavailable: online playback still works. */ }
 }
 function labeledIcon(name, label) {
   const wrapper = document.createDocumentFragment();
@@ -166,12 +177,13 @@ function toast(message) {
 function route(view) {
   state.view = view;
   document.querySelectorAll('.nav-btn').forEach((button) => button.classList.toggle('active', button.dataset.view === view));
-  ui.title.textContent = ({ home: 'Inicio', search: 'Buscar', favorites: 'Favoritos', playlists: 'Playlists' })[view];
+  ui.title.textContent = ({ home: 'Inicio', search: 'Buscar', favorites: 'Favoritos', playlists: 'Playlists', downloads: 'Descargas' })[view];
   ui.search.value = '';
   ui.search.placeholder = view === 'search' ? 'Canción o artista' : 'Buscar música';
   if (view === 'home') loadHome();
   else if (view === 'favorites') renderFavorites();
   else if (view === 'playlists') renderPlaylists();
+  else if (view === 'downloads') renderDownloads();
   else renderSearchIdle();
 }
 
@@ -290,6 +302,7 @@ async function searchMusic(query, limit = 30) {
   return rankTracks(extractTracks(data), query).slice(0, limit);
 }
 async function loadHome() {
+  const request = ++state.request;
   loading();
   try {
     const discoveryQueries = [
@@ -302,8 +315,12 @@ async function loadHome() {
     const tracks = [...new Map(responses.flatMap((result) => result.status === 'fulfilled' ? result.value : [])
       .map((track) => [track.id, track])).values()];
     if (!tracks.length) throw new Error('No hay recomendaciones disponibles en este momento.');
-    renderHome(shuffleItems(tracks));
-  } catch (error) { empty('No se pudo cargar música', error.message); }
+    if (state.view === 'home' && request === state.request) renderHome(shuffleItems(tracks));
+  } catch (error) {
+    if (state.view !== 'home' || request !== state.request) return;
+    if (state.recent.length || state.favorites.length) renderHome([]);
+    else empty('No se pudo cargar música', 'Puedes escuchar tu música guardada en Descargas.');
+  }
 }
 function renderHome(tracks) {
   const songs = tracks.filter((track) => track.kind === 'song' && track.art);
@@ -337,9 +354,10 @@ function renderHome(tracks) {
     featuredActions.append(play, download);
     copy.append(featuredActions);
     hero.append(cover, shade, copy);
-    hero.addEventListener('click', (event) => { if (event.target !== play) playQueue(recommendations, 0); });
+    hero.addEventListener('click', (event) => { if (!event.target.closest('button')) playQueue(recommendations, 0); });
     ui.content.append(hero);
   }
+  appendMusicSection('Escuchado recientemente', 'Vuelve a tus canciones', state.recent.slice(0, 8), state.recent);
   appendMusicSection('Hecho para ti', 'Selección basada en lo que suena ahora', recommendations.slice(0, 8), recommendations);
   if (state.favorites.length) appendMusicSection('Tu música', 'Tus favoritos, listos para volver a escuchar', state.favorites.slice(0, 8), state.favorites);
   if (recommendations.length > 8) appendMusicSection('Más para descubrir', 'Sigue explorando nuevos sonidos', recommendations.slice(8, 16), recommendations);
@@ -580,6 +598,13 @@ function renderFavorites() {
   } else empty('Aún no tienes canciones guardadas', 'Pulsa el corazón en una canción para añadirla.');
   addSpotifyLikesImport();
   ui.content.prepend(csvExportButton('Me gusta', state.favorites));
+}
+async function renderDownloads() {
+  await syncDownloads();
+  if (state.view !== 'downloads') return;
+  if (!state.downloads.length) { empty('Aún no tienes descargas', 'Guarda canciones para escucharlas aquí sin conexión.'); return; }
+  renderTracks(state.downloads, 'Disponibles sin conexión');
+  ui.content.prepend(csvExportButton('Descargas', state.downloads));
 }
 function addSpotifyLikesImport(container = ui.content) {
   const section = el('section', 'spotify-import');
@@ -928,6 +953,9 @@ function findPlaylistTitle(data) {
 
 async function playQueue(queue, index) {
   if (!queue?.length) return;
+  if (isCurrentRecording(state.current, queue[index], isNativeApp ? state.nativeAvailable : Boolean(audio.src && !audio.error && !audio.ended))) {
+    openPlayer(); return;
+  }
   const continuingQueue = queue === state.queue;
   if (isNativeApp && continuingQueue) {
     try {
@@ -946,10 +974,12 @@ async function playQueue(queue, index) {
   state.queue = queue;
   state.index = Math.max(0, Math.min(index, queue.length - 1));
   state.current = queue[state.index];
+  const request = ++playbackRequest;
   openPlayer();
   updatePlayer();
   if (isNativeApp) {
     try {
+      state.nativeAvailable = false;
       await NativePlayback.play({ tracks: state.queue, index: state.index, shuffle: state.shuffle });
       setPlayIcon(true);
       syncNativeState();
@@ -959,11 +989,16 @@ async function playQueue(queue, index) {
   audio.pause();
   selectingPlaybackSource = true;
   try {
-    audio.src = '/stream?id=' + encodeURIComponent(videoId(state.current)) + '&play=1';
+    const saved = await offlineAudio(state.current.id).catch(() => null);
+    if (request !== playbackRequest) return;
+    if (offlineUrl) { URL.revokeObjectURL(offlineUrl); offlineUrl = null; }
+    if (saved) offlineUrl = URL.createObjectURL(saved);
+    audio.src = offlineUrl || '/stream?id=' + encodeURIComponent(videoId(state.current)) + '&play=1';
     audio.load();
     await audio.play();
     setPlayIcon(true);
   } catch (error) {
+    if (request !== playbackRequest) return;
     if (/not supported|no supported source/i.test(error?.message || '')) {
       try {
         audio.src = '/stream?id=' + encodeURIComponent(videoId(state.current)) + '&play=1&variant=progressive';
@@ -976,7 +1011,7 @@ async function playQueue(queue, index) {
     if (await tryAlternateRecording(state.current)) return;
     toast('No se pudo reproducir · ' + error.message);
   } finally {
-    selectingPlaybackSource = false;
+    if (request === playbackRequest) selectingPlaybackSource = false;
   }
 }
 async function tryAlternateRecording(track) {
@@ -1057,10 +1092,15 @@ function renderQueue() {
   ui.lyricsQueueSlot.hidden = ui.lyrics.hidden || !state.queueOpen || !hasQueue;
   ui.lyrics.classList.toggle('has-queue', !ui.lyrics.hidden && state.queueOpen && hasQueue);
   ui.player.classList.toggle('queue-open', state.queueOpen && hasQueue);
-  if (!hasQueue) return;
+  if (!hasQueue) { queueRenderKey = ''; ui.queueList.replaceChildren(); return; }
   ui.queueSummary.textContent = `${state.index + 1} de ${state.queue.length}`;
+  if (!state.queueOpen) return;
+  const visible = queueWindow(state.queue, state.index);
+  const key = JSON.stringify(visible.map(({ track, index }) => [index, track.id, track.title, track.artist, track.art]));
+  if (queueRenderKey === key) return;
+  queueRenderKey = key;
   ui.queueList.replaceChildren();
-  state.queue.forEach((track, index) => {
+  visible.forEach(({ track, index }) => {
     const item = el('button', 'queue-item' + (index === state.index ? ' is-current' : ''));
     item.type = 'button';
     item.setAttribute('aria-current', index === state.index ? 'true' : 'false');
@@ -1094,8 +1134,9 @@ function applyNativeState(nativeState) {
   state.shuffle = Boolean(nativeState.shuffle);
   state.repeat = Number(nativeState.repeat) === 1 ? 1 : Number(nativeState.repeat) === 2 ? 2 : 0;
   state.isPlaying = Boolean(nativeState.playing);
+  state.nativeAvailable = Boolean(nativeState.available);
   if (state.current) {
-    if (previousId !== state.current.id) updatePlayer();
+    if (previousId !== state.current.id) { rememberCurrent(); updatePlayer(); }
     else { setPlayIcon(state.isPlaying); renderQueue(); }
   }
   progress();
@@ -1194,10 +1235,10 @@ function previewSeek(value) {
 }
 
 async function downloadTrack(track) {
+  if (state.downloadedIds.has(track.id)) { toast('Disponible sin conexión'); return; }
+  if (state.downloadTasks.get(track.id)?.state === 0) return;
   void getTrackLyrics(track).catch(() => {});
   try {
-    if (isNativeApp && state.downloadedIds.has(track.id)) { toast('Disponible sin conexión'); return; }
-    if (isNativeApp && state.downloadTasks.get(track.id)?.state === 0) return;
     toast('Preparando descarga…');
     if (isNativeApp) {
       const result = await NativePlayback.download({ track });
@@ -1205,18 +1246,18 @@ async function downloadTrack(track) {
       toast(result?.alreadyDownloaded ? 'Disponible sin conexión' : 'Descarga iniciada');
       return;
     }
+    state.downloadTasks.set(track.id, { id: track.id, state: 0 });
+    document.querySelectorAll('[data-download-track]').forEach(button => updateDownloadButton(button, button.dataset.downloadTrack));
     const response = await fetch('/stream?id=' + encodeURIComponent(videoId(track)) + '&download=1&variant=progressive');
     if (!response.ok) throw new Error('HTTP ' + response.status);
+    if (!/^(audio|video)\//i.test(response.headers.get('content-type') || '')) throw new Error('No se recibió un archivo de audio');
     const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const anchor = el('a');
-    anchor.href = url;
-    const extension = (response.headers.get('content-type') || '').includes('video/mp4') ? '.mp4' : '.m4a';
-    anchor.download = safeName(track.artist + ' - ' + track.title) + extension;
-    document.body.append(anchor); anchor.click(); anchor.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
-    toast(extension === '.mp4' ? 'Descarga iniciada · MP4' : 'Descarga iniciada');
-  } catch (error) { toast('No se pudo descargar · ' + error.message); }
+    await saveOfflineAudio(track, blob);
+    toast('Disponible sin conexión');
+  } catch (error) { toast('No se pudo descargar · ' + (error.name === 'QuotaExceededError' ? 'No hay espacio suficiente en el navegador.' : error.message)); }
+  finally {
+    if (!isNativeApp) { state.downloadTasks.delete(track.id); await syncDownloads(); }
+  }
 }
 function safeName(name) { return name.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120); }
 
@@ -1248,7 +1289,7 @@ async function loadLyrics() {
     ui.lyricsText.classList.add('has-timestamps');
     renderLyrics();
     syncLyrics(true);
-  } else renderPlainLyrics(data?.plainLyrics || 'No se encontr? una letra disponible.');
+  } else renderPlainLyrics(data?.plainLyrics || 'No se encontró una letra disponible.');
 }
 async function getTrackLyrics(track) {
   if (pendingLyrics.has(track.id)) return pendingLyrics.get(track.id);
@@ -1413,6 +1454,8 @@ ui.miniFav.addEventListener('click', () => state.current && toggleFavorite(state
 ui.playerFav.addEventListener('click', () => state.current && toggleFavorite(state.current));
 ui.playerDownload.addEventListener('click', () => state.current && downloadTrack(state.current));
 ui.playerLyrics.addEventListener('click', loadLyrics);
+$('#miniLyrics').addEventListener('click', () => { if (state.current) { openPlayer(); if (ui.lyrics.hidden) loadLyrics(); else closeLyrics(); } });
+$('#miniQueue').addEventListener('click', () => { if (state.current) { openPlayer(); state.queueOpen = !state.queueOpen; renderQueue(); } });
 $('#closeLyrics').addEventListener('click', closeLyrics);
 function closeLyrics() {
   ui.lyrics.hidden = true;
@@ -1463,7 +1506,17 @@ document.addEventListener('keydown', (event) => {
   if (event.code === 'Space' && state.current) { event.preventDefault(); togglePlayback(); }
 });
 
+function rememberCurrent() {
+  if (!state.current) return;
+  state.recent = [state.current, ...state.recent.filter(track => track.id !== state.current.id)].slice(0, 80);
+  try { localStorage.setItem('ritmo.recent', JSON.stringify(state.recent)); } catch { }
+}
+audio.addEventListener('playing', () => { if (!isNativeApp) rememberCurrent(); });
+void syncDownloads();
 route('home');
+if (!isNativeApp && import.meta.env.PROD && 'serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
 if (isNativeApp) {
   NativePlayback.addListener('playbackState', applyNativeState).catch(() => {});
   NativePlayback.addListener('downloadsState', applyDownloadsState).catch(() => {});

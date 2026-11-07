@@ -11,18 +11,21 @@ using System.Windows.Threading;
 namespace Ritmo;
 public partial class MainWindow : Window
 {
-    readonly Store store = new(Environment.GetCommandLineArgs().Contains("--ui-test") ? Path.Combine(AppContext.BaseDirectory, "ui-test-data") : null); readonly Catalog catalog = new(); readonly AudioLibrary audio; readonly Playback playback;
+    readonly Store store = new(Environment.GetCommandLineArgs().Contains("--real-art-test") ? Path.Combine(AppContext.BaseDirectory, "real-art-test-data") : Environment.GetCommandLineArgs().Any(a => a is "--ui-test" or "--panel-test") ? Path.Combine(AppContext.BaseDirectory, "ui-test-data") : null); readonly Catalog catalog = new(); readonly AudioLibrary audio; readonly Playback playback;
     readonly ArtworkLoader artwork;
+    readonly ArtworkPresenter artworkPresenter;
+    readonly UiDiagnostics diagnostics;
     readonly CancellationTokenSource lifetime = new(); CancellationTokenSource? pageRequest;
     readonly Grid root = new(), shell = new(), main = new(), overlay = new();
-    readonly StackPanel sidebar = new(), content = new(), footerInfo = new();
+    readonly StackPanel sidebar = new(), footerInfo = new();
+    readonly LibraryList content = new();
     readonly TextBlock pageTitle = Label("Inicio", 28, true), notice = Label("", 13), currentTime = Label("0:00", 12), totalTime = Label("0:00", 12);
     readonly TextBox search = new(); readonly Slider seek = new() { Minimum = 0, Maximum = 1, IsMoveToPointEnabled = true };
     readonly Button playButton, shuffleButton, repeatButton, favoriteButton;
     readonly ThumbButtonInfo thumbPlay = new(), thumbFavorite = new(), thumbPrevious = new(), thumbNext = new();
-    readonly ScrollViewer scroller; readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    ScrollViewer? scroller; readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromMilliseconds(250) };
     readonly Dictionary<string, Button> navigation = new(); readonly HashSet<string> downloading = [];
-    readonly Dictionary<string, List<Button>> downloadButtons = new();
+    readonly Dictionary<string, List<WeakReference<Button>>> downloadButtons = new();
     List<Track> displayed = []; string view = "home", searchQuery = ""; string? continuation, browseId; bool paging, dragging, expanded, lyricsOpen, queueOpen;
     Track? renderedTrack; int lyricActive = -1; List<(double Time, string Text)> lyricLines = []; List<TextBlock> lyricBlocks = [];
     ScrollViewer? lyricScroll; StackPanel? lyricsText, queueList; Grid? playerLayout;
@@ -34,6 +37,8 @@ public partial class MainWindow : Window
         Background = Brush("#060A09"); Foreground = Icons.Text; FontFamily = new FontFamily("Segoe UI");
         Icon = new IconBitmapDecoder(new Uri("pack://application:,,,/Assets/ritmo.ico"), BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad).Frames.MaxBy(frame => frame.PixelWidth);
         artwork = new(store.Folder);
+        artworkPresenter = new(this, artwork, lifetime.Token);
+        diagnostics = new(this, store.Folder); diagnostics.Start();
         audio = new(store, catalog); _ = Task.Run(audio.TrimCache); playback = new(audio, store);
         root.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) }); root.RowDefinitions.Add(new() { Height = GridLength.Auto }); Content = root;
         shell.ColumnDefinitions.Add(new() { Width = new GridLength(205) }); shell.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); root.Children.Add(shell);
@@ -54,10 +59,14 @@ public partial class MainWindow : Window
         search.KeyDown += async (_, e) => { if (e.Key == Key.Enter && search.Text.Trim().Length > 0) { searchQuery = search.Text.Trim(); await Route("search"); } };
         Grid.SetColumn(search, 1); top.Children.Add(search); main.Children.Add(top);
         notice.Foreground = Icons.Dim; notice.TextWrapping = TextWrapping.Wrap; notice.Margin = new Thickness(0, 2, 0, 10); Grid.SetRow(notice, 1); main.Children.Add(notice);
-        scroller = new() { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Padding = new Thickness(0, 0, 12, 20) };
-        scroller.ScrollChanged += async (_, e) => { if (e.VerticalChange > 0 && scroller.ScrollableHeight - scroller.VerticalOffset < 300) await More(); };
-        Grid.SetRow(scroller, 2); main.Children.Add(scroller);
-        overlay.Visibility = Visibility.Collapsed; overlay.Background = Brush("#0B1110"); root.Children.Add(overlay);
+        content.CreateRow = track => TrackRow(track, () => _ = playback.Play(displayed.ToList(), track));
+        content.Loaded += (_, _) => scroller = Descendants<ScrollViewer>(content).FirstOrDefault();
+        content.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler(async (_, e) => {
+            if (ReferenceEquals(e.OriginalSource, scroller) && e.VerticalChange > 0 && scroller != null && scroller.ScrollableHeight - scroller.VerticalOffset < 300) await More();
+        }));
+        Grid.SetRow(content, 2); main.Children.Add(content);
+        overlay.Visibility = Visibility.Hidden; overlay.Background = Brush("#0B1110"); root.Children.Add(overlay);
+        root.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler((_, _) => artworkPresenter.Refresh()));
         var footer = new Grid { Background = Brush("#0B1110"), Margin = new Thickness(0), MinHeight = 108 };
         footer.ColumnDefinitions.Add(new() { Width = new GridLength(230) }); footer.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); footer.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         var open = new Button { Content = footerInfo, Background = Brushes.Transparent, Margin = new Thickness(12), Padding = new Thickness(0), HorizontalContentAlignment = HorizontalAlignment.Stretch };
@@ -72,9 +81,11 @@ public partial class MainWindow : Window
         var timeline = new Grid(); timeline.ColumnDefinitions.Add(new() { Width = new GridLength(42) }); timeline.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); timeline.ColumnDefinitions.Add(new() { Width = new GridLength(42) });
         currentTime.VerticalAlignment = totalTime.VerticalAlignment = VerticalAlignment.Center; totalTime.TextAlignment = TextAlignment.Right;
         timeline.Children.Add(currentTime); Grid.SetColumn(seek, 1); timeline.Children.Add(seek); Grid.SetColumn(totalTime, 2); timeline.Children.Add(totalTime); center.Children.Add(timeline);
-        seek.PreviewMouseLeftButtonDown += (_, _) => dragging = true;
-        seek.PreviewMouseLeftButtonUp += (_, _) => { playback.Seek(seek.Value); dragging = false; };
-        seek.LostMouseCapture += (_, _) => { if (dragging) playback.Seek(seek.Value); dragging = false; };
+        // Slider handles track clicks before instance handlers run. Observe
+        // handled events too so Tick cannot overwrite the target before release.
+        seek.AddHandler(PreviewMouseLeftButtonDownEvent, new MouseButtonEventHandler((_, _) => dragging = true), true);
+        seek.AddHandler(PreviewMouseLeftButtonUpEvent, new MouseButtonEventHandler((_, _) => CommitSeek()), true);
+        seek.LostMouseCapture += (_, _) => CommitSeek();
         seek.PreviewKeyUp += (_, _) => playback.Seek(seek.Value);
         var utilities = new WrapPanel { Width = 150, Margin = new Thickness(10, 8, 8, 8), VerticalAlignment = VerticalAlignment.Center };
         favoriteButton = IconButton("heart", "Me gusta", () => { if (playback.Current is { } t) { store.Favorite(t); UpdatePlayback(); } }); utilities.Children.Add(favoriteButton);
@@ -90,14 +101,15 @@ public partial class MainWindow : Window
         thumbNext.Description = "Siguiente"; thumbNext.ImageSource = Icons.Image("next"); thumbNext.Click += async (_, _) => await playback.Next();
         foreach (var button in new[] { thumbFavorite, thumbPrevious, thumbPlay, thumbNext }) TaskbarItemInfo.ThumbButtonInfos.Add(button);
         playback.Changed += UpdatePlayback; playback.Error += Notify; playback.OpenRequested += OpenPlayer;
+        playback.Diagnostic += diagnostics.PlaybackState;
         audio.Progress += (id, p) => Dispatcher.BeginInvoke(() => {
             if (playback.Loading && playback.Current?.Id == id) Notify($"Preparando audio · {p:P0}");
-            if (downloadButtons.TryGetValue(id, out var buttons)) foreach (var button in buttons) button.ToolTip = $"Descargando · {p:P0}";
+            foreach (var button in DownloadTargets(id)) button.ToolTip = $"Descargando · {p:P0}";
             if (downloading.Count > 0) { TaskbarItemInfo.ProgressState = TaskbarItemProgressState.Normal; TaskbarItemInfo.ProgressValue = p; }
         });
         timer.Tick += (_, _) => Tick(); timer.Start();
         PreviewKeyDown += async (_, e) => {
-            if (e.Key == Key.Escape && expanded) { expanded = false; overlay.Visibility = Visibility.Collapsed; e.Handled = true; }
+            if (e.Key == Key.Escape && expanded) { ClosePlayer(); e.Handled = true; }
             if (e.Key == Key.Space && Keyboard.FocusedElement is not TextBox) { await playback.Toggle(); e.Handled = true; }
             if (e.Key == Key.MediaNextTrack) { await playback.Next(); e.Handled = true; }
             if (e.Key == Key.MediaPreviousTrack) { await playback.Previous(); e.Handled = true; }
@@ -105,7 +117,7 @@ public partial class MainWindow : Window
         };
         SizeChanged += (_, _) => { shell.ColumnDefinitions[0].Width = new GridLength(ActualWidth < 950 ? 170 : 205); ArrangePlayer(); };
         Closed += (_, _) => { timer.Stop(); pageRequest?.Cancel(); lifetime.Cancel(); playback.Dispose(); };
-        Loaded += async (_, _) => { UpdatePlayback(); if (!Environment.GetCommandLineArgs().Contains("--ui-test")) await Route("home"); else await PreviewTest(); };
+        Loaded += async (_, _) => { UpdatePlayback(); if (Environment.GetCommandLineArgs().Contains("--panel-test")) await PanelTest(); else if (Environment.GetCommandLineArgs().Contains("--ui-test")) await PreviewTest(); else await Route("home"); };
     }
     static readonly Dictionary<string, Brush> palette = [];
     static Brush Brush(string hex)
@@ -130,6 +142,7 @@ public partial class MainWindow : Window
     static string Time(double seconds) => TimeSpan.FromSeconds(Math.Max(0, seconds)).ToString(seconds >= 3600 ? @"h\:mm\:ss" : @"m\:ss");
     void Tick()
     {
+        diagnostics.Tick(expanded ? lyricsOpen ? "lyrics" : queueOpen ? "queue" : "cover" : "library");
         seek.IsEnabled = playback.Current != null && !playback.Loading;
         seek.Maximum = Math.Max(1, playback.Duration);
         if (!dragging) seek.Value = playback.Player.Position.TotalSeconds;
@@ -144,6 +157,13 @@ public partial class MainWindow : Window
                 if (active >= 0 && active < lyricBlocks.Count) { lyricBlocks[active].Foreground = Icons.Text; lyricBlocks[active].BringIntoView(); }
             }
         }
+    }
+    void CommitSeek()
+    {
+        if (!dragging) return;
+        var target = seek.Value;
+        dragging = false;
+        playback.Seek(target);
     }
     void UpdatePlayback()
     {
@@ -165,19 +185,16 @@ public partial class MainWindow : Window
             var artist = Label(track?.Artist ?? "Tu música, siempre a mano", 12); artist.Foreground = Icons.Dim; text.Children.Add(artist); info.Children.Add(text); footerInfo.Children.Add(info);
             Title = track == null ? "Ritmo" : track.Title + " · Ritmo";
             if (expanded) BuildPlayer();
+            else if (track != null) PreparePlayer(track);
         }
         if (expanded && queueOpen) RenderQueue();
     }
     FrameworkElement Artwork(Track track, double size)
     {
         var frame = new Border { Width = size, Height = size, CornerRadius = new CornerRadius(12), Background = Brush("#1A2422"), ClipToBounds = true };
-        var image = new Image { Stretch = Stretch.UniformToFill }; frame.Child = image;
+        var image = new Image { Stretch = Stretch.UniformToFill, Width = size, Height = size }; frame.Child = image;
         var pixels = (int)Math.Ceiling(size * Math.Max(1, VisualTreeHelper.GetDpi(this).DpiScaleX));
-        image.Loaded += async (_, _) => {
-            if (image.Source != null) return;
-            var bitmap = await artwork.Get(track, pixels, lifetime.Token);
-            if (!lifetime.IsCancellationRequested && image.IsLoaded) image.Source = bitmap;
-        };
+        artworkPresenter.Attach(image, track, pixels, size >= 450);
         return frame;
     }
 }

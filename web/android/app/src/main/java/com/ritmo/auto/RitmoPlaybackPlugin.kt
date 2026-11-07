@@ -301,6 +301,7 @@ class RitmoPlaybackPlugin : Plugin() {
             put("index", player?.currentMediaItemIndex ?: -1)
             put("current", current)
             put("playing", player?.isPlaying ?: false)
+            put("available", player?.playbackState == androidx.media3.common.Player.STATE_READY || player?.playbackState == androidx.media3.common.Player.STATE_BUFFERING)
             put("position", player?.currentPosition?.coerceAtLeast(0L) ?: 0L)
             put("duration", player?.duration?.takeIf { it > 0L } ?: 0L)
             put("shuffle", PlayerHub.isShuffle())
@@ -310,7 +311,8 @@ class RitmoPlaybackPlugin : Plugin() {
 
     private fun downloadsSnapshot(): JSObject {
         val downloaded = JSArray()
-        Library.downloads().forEach { downloaded.put(it.id) }
+        val tracks = JSArray()
+        Library.downloads().forEach { downloaded.put(it.id); tracks.put(trackObject(it)) }
         val tasks = JSArray()
         Downloader.snapshot().values.forEach { progress ->
             tasks.put(JSObject().apply {
@@ -320,7 +322,7 @@ class RitmoPlaybackPlugin : Plugin() {
                 put("message", progress.message)
             })
         }
-        return JSObject().put("downloaded", downloaded).put("tasks", tasks)
+        return JSObject().put("downloaded", downloaded).put("tracks", tracks).put("tasks", tasks)
     }
 
     private fun trackObject(track: Track): JSObject = JSObject().apply {
