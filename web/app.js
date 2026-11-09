@@ -4,6 +4,8 @@ import { Capacitor, registerPlugin } from '@capacitor/core';
 import { uniqueTracks, orderUpcoming, rankTracks, libraryCsv, normalizeText, parseLibraryCsv, queueWindow, isCurrentRecording } from './music-utils.js';
 import { cachedLyrics, storeLyrics } from './lyrics-cache.js';
 import { offlineTracks, offlineAudio, saveOfflineAudio } from './offline-audio.js';
+import { initializePwa, installHelpButton, protectOfflineStorage, supportsOfflineAudioRoute } from './pwa.js';
+import { connectMediaSession } from './media-session.js';
 
 const isNativeApp = Capacitor.isNativePlatform();
 const NativePlayback = registerPlugin('RitmoPlayback');
@@ -24,6 +26,10 @@ function apiFetch(path, options) { return fetch(apiUrl(path), options); }
 
 const $ = (selector) => document.querySelector(selector);
 const audio = $('#audio');
+const updateMediaMetadata = isNativeApp ? () => {} : connectMediaSession(audio, {
+  next: () => playNext(), previous: () => playPrevious(),
+  error: () => toast('Pulsa reproducir en Ritmo para continuar.')
+});
 const ui = {
   title: $('#title'), search: $('#search'), content: $('#content'),
   miniArt: $('#miniArt'), miniTitle: $('#miniTitle'), miniArtist: $('#miniArtist'),
@@ -602,9 +608,12 @@ function renderFavorites() {
 async function renderDownloads() {
   await syncDownloads();
   if (state.view !== 'downloads') return;
-  if (!state.downloads.length) { empty('Aún no tienes descargas', 'Guarda canciones para escucharlas aquí sin conexión.'); return; }
-  renderTracks(state.downloads, 'Disponibles sin conexión');
-  ui.content.prepend(csvExportButton('Descargas', state.downloads));
+  if (!state.downloads.length) empty('Aún no tienes descargas', 'Guarda canciones para escucharlas aquí sin conexión.');
+  else {
+    renderTracks(state.downloads, 'Disponibles sin conexión');
+    ui.content.prepend(csvExportButton('Descargas', state.downloads));
+  }
+  if (!isNativeApp) ui.content.prepend(installHelpButton());
 }
 function addSpotifyLikesImport(container = ui.content) {
   const section = el('section', 'spotify-import');
@@ -988,17 +997,29 @@ async function playQueue(queue, index) {
   }
   audio.pause();
   selectingPlaybackSource = true;
+  let usingDownload = false;
   try {
     const saved = await offlineAudio(state.current.id).catch(() => null);
     if (request !== playbackRequest) return;
+    usingDownload = Boolean(saved);
     if (offlineUrl) { URL.revokeObjectURL(offlineUrl); offlineUrl = null; }
-    if (saved) offlineUrl = URL.createObjectURL(saved);
-    audio.src = offlineUrl || '/stream?id=' + encodeURIComponent(videoId(state.current)) + '&play=1';
+    const localRoute = saved && supportsOfflineAudioRoute()
+      ? '/_offline/audio/' + encodeURIComponent(state.current.id) : null;
+    if (saved && !localRoute) offlineUrl = URL.createObjectURL(saved);
+    audio.src = localRoute || offlineUrl || '/stream?id=' + encodeURIComponent(videoId(state.current)) + '&play=1';
     audio.load();
     await audio.play();
     setPlayIcon(true);
   } catch (error) {
     if (request !== playbackRequest) return;
+    if (error.name === 'NotAllowedError') {
+      toast('Pulsa reproducir para comenzar.');
+      return;
+    }
+    if (usingDownload) {
+      toast('No se pudo abrir la descarga. Vuelve a intentarlo.');
+      return;
+    }
     if (/not supported|no supported source/i.test(error?.message || '')) {
       try {
         audio.src = '/stream?id=' + encodeURIComponent(videoId(state.current)) + '&play=1&variant=progressive';
@@ -1047,6 +1068,7 @@ function closePlayer() { ui.player.hidden = true; document.body.classList.remove
 function updatePlayer() {
   const track = state.current;
   if (!track) return;
+  updateMediaMetadata(track);
   ui.miniTitle.textContent = track.title;
   ui.miniArtist.textContent = track.artist;
   ui.playerTitle.textContent = track.title;
@@ -1247,6 +1269,7 @@ async function downloadTrack(track) {
       return;
     }
     state.downloadTasks.set(track.id, { id: track.id, state: 0 });
+    void protectOfflineStorage();
     document.querySelectorAll('[data-download-track]').forEach(button => updateDownloadButton(button, button.dataset.downloadTrack));
     const response = await fetch('/stream?id=' + encodeURIComponent(videoId(track)) + '&download=1&variant=progressive');
     if (!response.ok) throw new Error('HTTP ' + response.status);
@@ -1256,7 +1279,11 @@ async function downloadTrack(track) {
     toast('Disponible sin conexión');
   } catch (error) { toast('No se pudo descargar · ' + (error.name === 'QuotaExceededError' ? 'No hay espacio suficiente en el navegador.' : error.message)); }
   finally {
-    if (!isNativeApp) { state.downloadTasks.delete(track.id); await syncDownloads(); }
+    if (!isNativeApp) {
+      state.downloadTasks.delete(track.id);
+      document.querySelectorAll('[data-download-track]').forEach(button => updateDownloadButton(button, button.dataset.downloadTrack));
+      await syncDownloads();
+    }
   }
 }
 function safeName(name) { return name.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120); }
@@ -1493,6 +1520,10 @@ audio.addEventListener('error', async () => {
   if (isNativeApp) return;
   if (selectingPlaybackSource) return;
   if (!state.current) return;
+  if (audio.src.startsWith('blob:') || new URL(audio.src, location.href).pathname.startsWith('/_offline/audio/')) {
+    toast('No se pudo abrir la descarga. Vuelve a intentarlo.');
+    return;
+  }
   if (await tryAlternateRecording(state.current)) return;
   const code = audio.error?.code;
   toast(code === MediaError.MEDIA_ERR_NETWORK
@@ -1514,9 +1545,7 @@ function rememberCurrent() {
 audio.addEventListener('playing', () => { if (!isNativeApp) rememberCurrent(); });
 void syncDownloads();
 route('home');
-if (!isNativeApp && import.meta.env.PROD && 'serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js').catch(() => {});
-}
+if (!isNativeApp) initializePwa();
 if (isNativeApp) {
   NativePlayback.addListener('playbackState', applyNativeState).catch(() => {});
   NativePlayback.addListener('downloadsState', applyDownloadsState).catch(() => {});

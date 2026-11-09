@@ -13,6 +13,7 @@
 .java-tmp/
 .dotnet/
 .npm-cache/
+.vercel/
 node_modules/
 bin/
 obj/

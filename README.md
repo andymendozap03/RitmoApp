@@ -55,6 +55,8 @@ Abre la dirección que muestra Vite, normalmente `http://localhost:8099`. Manté
 
 Para usar la interfaz de producción y guardar su arranque sin conexión, ejecuta `npm run build` y después `npm run preview`. Ábrela una vez con conexión y descarga canciones dentro de Ritmo. Al volver a esa misma dirección, el navegador puede recuperar la interfaz, el audio descargado y las letras ya guardadas sin red. El modo `npm run dev` no instala esta caché de interfaz. El ZIP de la release incluye los fuentes web, `dist` y los proxies; descomprímelo, ejecuta `npm ci` y `npm run preview`.
 
+Para instalar la web en **iPhone/iPad desde Safari**, consulta la [guía de instalación, descargas offline y alojamiento HTTPS](docs/IPHONE.md). La interfaz incluye manifiesto, iconos y caché de arranque; Vercel puede alojarla, pero las rutas de música necesitan también un backend. No basta con publicar los archivos estáticos en GitHub Pages.
+
 ## Compilar Windows
 
 Instala el SDK de .NET 10 y ejecuta:

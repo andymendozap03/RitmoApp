@@ -41,6 +41,12 @@ html, body {
 *::-webkit-scrollbar-corner { background: transparent; }
 
 .sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+.pwa-help { margin: 0 12px 16px 0; }
+.pwa-dialog { max-height: calc(100dvh - 40px - var(--ritmo-safe-top) - var(--ritmo-safe-bottom)); overflow-y: auto; }
+.pwa-dialog p { color: var(--dim); line-height: 1.5; }
+.pwa-dialog .pwa-status { color: var(--text); }
+.pwa-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 20px; }
+.pwa-install[hidden] { display: none; }
 
 svg { width: 20px; height: 20px; fill: currentColor; flex: none; }
 .ui-icon { display: block; width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }

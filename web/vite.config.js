@@ -1,5 +1,27 @@
 import { defineConfig } from 'vite';
 import { Readable } from 'node:stream';
+import { createHash } from 'node:crypto';
+import { readFile, writeFile } from 'node:fs/promises';
+import { resolve as resolvePath } from 'node:path';
+
+function versionOfflineShell() {
+  let output;
+  return {
+    name: 'ritmo-version-offline-shell', apply: 'build',
+    configResolved(config) { output = resolvePath(config.root, config.build.outDir); },
+    async closeBundle() {
+      const file = resolvePath(output, 'sw.js');
+      const worker = await readFile(file, 'utf8');
+      const html = await readFile(resolvePath(output, 'index.html'));
+      const hash = createHash('sha256').update(html).update(worker);
+      for (const asset of ['manifest.webmanifest', 'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png']) {
+        hash.update(await readFile(resolvePath(output, asset)));
+      }
+      const id = hash.digest('hex').slice(0, 16);
+      await writeFile(file, worker.replace('__BUILD_ID__', id));
+    }
+  };
+}
 
 const invidious = [
   'https://yt.artemislena.eu',
@@ -224,5 +246,5 @@ export default defineConfig({
     target: 'es2020',
     sourcemap: false,
   },
-  plugins: [musicStreamProxy()],
+  plugins: [musicStreamProxy(), versionOfflineShell()],
 });

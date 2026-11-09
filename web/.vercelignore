@@ -1,0 +1,15 @@
+/*
+!/.vercelignore
+!/package.json
+!/package-lock.json
+!/vercel.json
+!/vite.config.js
+!/index.html
+!/style.css
+!/app.js
+!/music-utils.js
+!/lyrics-cache.js
+!/offline-audio.js
+!/media-session.js
+!/pwa.js
+!/public

@@ -7,7 +7,12 @@ async function openDatabase() {
       request.result.createObjectStore('tracks', { keyPath: 'id' });
       request.result.createObjectStore('audio');
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onclose = () => { database = null; };
+      db.onversionchange = () => { db.close(); database = null; };
+      resolve(db);
+    };
     request.onerror = () => reject(request.error);
   }).catch(error => { database = null; throw error; });
   return database;
@@ -24,18 +29,28 @@ export async function offlineAudio(id) {
   const db = await openDatabase();
   return new Promise((resolve, reject) => {
     const request = db.transaction('audio').objectStore('audio').get(id);
-    request.onsuccess = () => resolve(request.result || null);
+    request.onsuccess = () => {
+      const value = request.result;
+      // Existing Chromium downloads are Blobs. New downloads use bytes because
+      // WebKit can abort IndexedDB transactions that persist file-backed Blobs.
+      resolve(value instanceof Blob ? value : value?.bytes instanceof ArrayBuffer
+        ? new Blob([value.bytes], {type:value.type || 'audio/mp4'}) : null);
+    };
     request.onerror = () => reject(request.error);
   });
 }
 export async function saveOfflineAudio(track, blob) {
   if (!(blob instanceof Blob) || blob.size < 1024) throw new Error('El archivo de audio está incompleto');
+  // Read before opening the transaction: awaiting here inside a transaction can
+  // make Safari auto-commit it before the puts run.
+  const bytes = await blob.arrayBuffer();
   const db = await openDatabase();
   await new Promise((resolve, reject) => {
     const tx = db.transaction(['tracks', 'audio'], 'readwrite');
     tx.objectStore('tracks').put(track);
-    tx.objectStore('audio').put(blob, track.id);
+    tx.objectStore('audio').put({bytes, type:blob.type}, track.id);
     tx.oncomplete = resolve;
-    tx.onerror = tx.onabort = () => reject(tx.error || new Error('No se pudo guardar el audio'));
+    tx.onerror = event => reject(event.target.error || tx.error || new Error('No se pudo guardar el audio'));
+    tx.onabort = () => reject(tx.error || new Error('No se pudo guardar el audio'));
   });
 }
